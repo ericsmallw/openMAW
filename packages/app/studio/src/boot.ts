@@ -11,6 +11,7 @@ import {BuildInfo} from "./BuildInfo"
 import {Surface} from "@/ui/surface/Surface.tsx"
 import {replaceChildren} from "@opendaw/lib-jsx"
 import {
+    AudioContentFactory,
     AudioWorklets,
     BufferUnderrunDetector,
     CloudAuthManager,
@@ -20,8 +21,11 @@ import {
     OfflineEngineRenderer,
     OpenSampleAPI,
     OpenSoundfontAPI,
+    Project,
     Workers
 } from "@opendaw/studio-core"
+import {AudioFileBox} from "@opendaw/studio-boxes"
+import {InstrumentFactories} from "@opendaw/studio-adapters"
 import {testFeatures} from "@/features.ts"
 import {MissingFeature} from "@/ui/MissingFeature.tsx"
 import {UpdateMessage} from "@/ui/UpdateMessage.tsx"
@@ -30,6 +34,7 @@ import {Promises} from "@opendaw/lib-runtime"
 import {AnimationFrame, Browser, Html, ShortcutManager} from "@opendaw/lib-dom"
 import {AudioOutputDevice} from "@/audio/AudioOutputDevice"
 import {installLatencyReporter} from "@/LatencyReporter"
+import {MusSessionService} from "@/service/MusSessionService"
 import {reportVisitor} from "@/VisitorReporter"
 import {FontLoader} from "@/ui/FontLoader"
 import {ErrorHandler} from "@/errors/ErrorHandler.ts"
@@ -66,6 +71,8 @@ export const boot = async ({workersUrl, workletsUrl, offlineEngineUrl}: {
     }
     console.debug("isLocalHost", Browser.isLocalHost())
     console.debug("agent", Browser.userAgent)
+    console.debug("crossOriginIsolated", window.crossOriginIsolated)
+    console.debug("location", window.location.href)
     const sampleRate = Browser.isFirefox() ? undefined : 48000
     console.debug("requesting custom sampleRate", sampleRate ?? "'No (Firefox)'")
     const context = new AudioContext({sampleRate, latencyHint: 0})
@@ -118,6 +125,68 @@ export const boot = async ({workersUrl, workletsUrl, offlineEngineUrl}: {
     }, errorHandler)
     Surface.subscribeKeyboard("keydown", event => ShortcutManager.get().handleEvent(event), Number.MAX_SAFE_INTEGER)
     document.querySelector("#preloader")?.remove()
+    // Resolve MŪS session if launched from the platform
+    const musSession = await new MusSessionService().resolve()
+    if (musSession) {
+        console.debug("[boot] MŪS session resolved for user", musSession.userId)
+        // If launched from a track's "Open Studio" button, create a new project
+        // named after the track and import the audio into a Tape track
+        if (musSession.trackTitle) {
+            console.debug("[boot] Creating project from MŪS track:", musSession.trackTitle)
+            service.projectProfileService.setProject(Project.new(service), musSession.trackTitle)
+            // If we have an audio URL, import it into the project as a Tape track
+            if (musSession.audioUrl && service.hasProfile) {
+                try {
+                    const project = service.project
+                    const {editing, boxGraph, api} = project
+                    // Resolve relative MUS URLs to absolute
+                    const audioUrl = musSession.audioUrl.startsWith("http")
+                        ? musSession.audioUrl
+                        : `${(import.meta as any).env?.VITE_MUS_API_URL ?? "http://localhost:3000"}${musSession.audioUrl}`
+                    console.debug("[boot] Importing audio from:", audioUrl)
+                    // Fetch the audio bytes
+                    const audioRes = await fetch(audioUrl)
+                    if (!audioRes.ok) {
+                        console.warn("[boot] Failed to fetch audio:", audioRes.status)
+                    } else {
+                        const arrayBuffer = await audioRes.arrayBuffer()
+                        // Use the sample service to properly import the audio file
+                        // (registers it with the sample manager and processes transients)
+                        const {status, value: sample, error} = await Promises.tryCatch(
+                            service.sampleService.importFile({
+                                name: musSession.trackTitle,
+                                arrayBuffer,
+                            })
+                        )
+                        if (status === "rejected") {
+                            console.warn("[boot] Failed to import sample:", error)
+                        } else {
+                            const uuid = UUID.parse(sample.uuid)
+                            // Pre-load audio data so it's ready for playback
+                            await Promises.tryCatch(service.sampleManager.getAudioData(uuid))
+                            // Create the Tape instrument and audio file box
+                            editing.modify(() => {
+                                const {trackBox, instrumentBox} = api.createInstrument(InstrumentFactories.Tape)
+                                instrumentBox.label.setValue(musSession.trackTitle!)
+                                const audioFileBox = boxGraph.findBox<AudioFileBox>(uuid)
+                                    .unwrapOrElse(() => AudioFileBox.create(boxGraph, uuid, box => {
+                                        box.fileName.setValue(musSession.trackTitle!)
+                                        box.startInSeconds.setValue(0)
+                                        box.endInSeconds.setValue(sample.duration)
+                                    }))
+                                AudioContentFactory.createNotStretchedRegion({
+                                    boxGraph, sample, audioFileBox, position: 0, targetTrack: trackBox
+                                })
+                            })
+                            console.debug("[boot] Audio imported successfully, duration:", sample.duration)
+                        }
+                    }
+                } catch (err) {
+                    console.warn("[boot] Failed to import audio:", err)
+                }
+            }
+        }
+    }
     replaceChildren(surface.ground, App(service))
     AnimationFrame.start(window)
     installCursors()
@@ -132,7 +201,7 @@ export const boot = async ({workersUrl, workletsUrl, offlineEngineUrl}: {
     if (opfsProbe.status === "rejected") {
         Dialogs.info({
             headline: "Storage Unavailable",
-            message: "openDAW cannot persist samples, presets or projects because the browser is blocking access to private storage. This typically happens in Private Browsing mode. Please reopen openDAW in a regular browser window to enable saving."
+            message: "openMAW cannot persist samples, presets or projects because the browser is blocking access to private storage. This typically happens in Private Browsing mode. Please reopen openMAW in a regular browser window to enable saving."
         }).finally()
     }
     if (buildInfo.env === "production" && !Browser.isLocalHost()) {

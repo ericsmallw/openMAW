@@ -59,10 +59,7 @@ export default defineConfig(({command}) => {
         server: {
             port: 8080,
             host: "localhost",
-            https: command === "serve" ? {
-                key: readFileSync(resolve(__dirname, "../../../certs/localhost-key.pem")),
-                cert: readFileSync(resolve(__dirname, "../../../certs/localhost.pem"))
-            } : undefined,
+            https: undefined,
             headers: {
                 "Cross-Origin-Opener-Policy": "same-origin",
                 "Cross-Origin-Embedder-Policy": "require-corp",

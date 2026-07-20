@@ -1,0 +1,30 @@
+component
+  display: grid
+  grid-template-columns: subgrid
+  grid-column: 1 / -1
+  color: var(--color-dark)
+  align-items: center
+
+  &.selected
+    color: var(--color-gray)
+
+  > div.meta
+    display: grid
+    grid-template-columns: subgrid
+    grid-column: span 4
+    padding-left: 3px
+    border-left: 3px transparent solid
+
+    &:hover
+      border-left: 3px var(--color-blue) solid
+
+    &:active
+      cursor: grabbing
+
+    > span
+      overflow: hidden
+      white-space: nowrap
+      text-overflow: ellipsis
+
+      &.right
+        text-align: right
